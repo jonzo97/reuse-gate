@@ -13,7 +13,7 @@ import time
 import uuid
 
 DECISIONS = ('adopt', 'extend', 'compose', 'build')
-CODE = set('.py .js .mjs .cjs .ts .tsx .jsx .sh .bash .zsh .gd .lua .rb .pl .php .go .rs .c .h .cpp .hpp .java .kt .swift .ps1 .ipynb'.split())
+CODE = set('.py .js .mjs .cjs .ts .tsx .jsx .sh .bash .zsh .gd .lua .rb .pl .php .go .rs .c .h .cpp .hpp .java .kt .swift .ps1 .ipynb .cs .mts .cts .dart .bat .cmd .vue .svelte .sql'.split())
 CONFIG = set('.json .yaml .yml .toml .ini .cfg .conf .xml .env .lock'.split())
 DENY = ('reuse-gate: new tool/script needs search evidence. In the project root, run '
         'reuse-gate search "<keywords>"; inspect the returned record and its licence/maintenance; '
@@ -125,11 +125,11 @@ def gated(path, project, globs):
     name, suffix = path.name.lower(), path.suffix.lower()
     if any(p in {'test', 'tests', '__tests__', 'spec', 'docs', 'doc'} for p in parts[:-1]):
         return False
-    if (name.startswith(('test_', '.env')) or path.stem.lower().endswith(('.test', '.spec', '_test', '_spec'))
+    if (name.startswith('test_') or name == '.env' or name.startswith('.env.') or path.stem.lower().endswith(('.test', '.spec', '_test', '_spec'))
             or (suffix == '.java' and path.stem.endswith('Test'))
             or suffix in {'.md', '.mdx', '.rst', '.txt', '.adoc'} | CONFIG
             or name in {'makefile', 'dockerfile', '.gitignore', '.editorconfig'}
-            or '.config.' in name or name in {'conftest.py', 'setup.cfg'}):
+            or ('.config.' in name and suffix in {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts'}) or name in {'conftest.py', 'setup.cfg'}):
         return False
     if any(fnmatch.fnmatchcase(relative, pattern) for pattern in globs):
         return False
@@ -228,13 +228,22 @@ def main(argv=None):
                 raise ValueError('use the record ID printed by search')
             path = state(project) / 'records' / (identifier + '.json')
             record = json.loads(path.read_text())
+            if not check_record(record, ttl, decided=False):
+                raise ValueError('invalid or expired search record; run reuse-gate search again')
             record.update(decision=args.decision, reason=args.reason.strip())
             if not check_record(record, ttl):
-                raise ValueError('invalid/expired record or decision reason. ' + DENY)
+                raise ValueError('invalid decision reason: use a nonempty one-line reason; build requires '
+                                 'a separate owner/repo: mismatch clause for each top candidate, '
+                                 'or No candidates: explanation for an empty result')
             save(path, record)
             print('Decision recorded: ' + identifier)
         return 0
-    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+    except (FileNotFoundError, subprocess.SubprocessError) as error:
+        detail = getattr(error, 'stderr', None) or str(error)
+        hint = '; check gh not installed/authenticated, network access and API rate limits' if args.command == 'search' else ''
+        print('reuse-gate: ' + detail.strip() + hint, file=sys.stderr)
+        return 1
+    except (OSError, ValueError, TypeError, AttributeError) as error:
         print('reuse-gate: ' + str(error), file=sys.stderr)
         return 1
 

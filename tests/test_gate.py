@@ -249,3 +249,71 @@ def test_readme_scope():
     'foo_test.go', 'foo_test.rs', 'foo_spec.rb', 'FooTest.java', 'spec/new.py'])
 def test_language_test_exemptions(project, name):
     assert gate.hook(payload(project, name)) is None
+
+
+
+@pytest.mark.parametrize('name', ['.env_helper.py', 'foo.config.py', 'foo.config.rb'])
+def test_config_lookalikes_are_gated(project, name):
+    assert gate.hook(payload(project, name)) == gate.DENY
+
+
+@pytest.mark.parametrize('name', ['.env', '.env.local', 'vite.config.js', 'vite.config.mts', 'vite.config.cts'])
+def test_actual_configs_are_exempt(project, name):
+    assert gate.hook(payload(project, name)) is None
+
+
+@pytest.mark.parametrize('extension', ['cs', 'mts', 'cts', 'dart', 'bat', 'cmd', 'vue', 'svelte', 'sql'])
+def test_additional_code_extensions(project, extension):
+    assert gate.hook(payload(project, 'main.' + extension)) == gate.DENY
+
+
+@pytest.mark.parametrize('failure,detail', [
+    (FileNotFoundError('missing gh'), 'missing gh'),
+    (subprocess.CalledProcessError(1, ['gh'], stderr='API rate limit exceeded'), 'API rate limit exceeded')])
+def test_search_errors_are_actionable(project, capsys, failure, detail):
+    with patch('subprocess.run', side_effect=failure):
+        assert gate.main(['search', 'small tool']) == 1
+    output = capsys.readouterr()
+    assert detail in output.err
+    assert 'gh not installed/authenticated' in output.err
+    assert not (project / '.reuse-gate/records').exists()
+
+
+def test_decide_errors_are_distinct(project, capsys):
+    record(project, created_at=time.time() - 86401)
+    assert gate.main(['decide', ID, 'adopt', 'fits']) == 1
+    expired = capsys.readouterr().err
+    assert 'expired' in expired
+    assert 'reason' not in expired
+    record(project)
+    assert gate.main(['decide', ID, 'build', 'does not fit']) == 1
+    invalid = capsys.readouterr().err
+    assert 'reason' in invalid
+    assert 'expired' not in invalid
+    assert gate.DENY not in invalid
+
+
+def test_real_symlink_loop_fails_open(project, monkeypatch, capsys):
+    (project / 'loop').symlink_to('loop')
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project, 'loop/new.py'))))
+    assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert output.err
+
+
+def test_unreadable_record_fails_open(project, monkeypatch, capsys):
+    record(project)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
+    with patch('pathlib.Path.read_text', side_effect=PermissionError('unreadable record')):
+        assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'unreadable record' in output.err
+
+
+def test_state_symlink_and_existing_file_protected(project):
+    record(project)
+    (project / 'evidence').symlink_to('.reuse-gate', target_is_directory=True)
+    for name in ['.reuse-gate/records/' + ID + '.json', 'evidence/records/new.json']:
+        assert 'protected' in gate.hook(payload(project, name))
