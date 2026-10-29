@@ -98,11 +98,18 @@ def check_record(record, ttl, decided=True):
 
 
 def has_record(project, ttl):
-    for path in (state(project) / 'records').glob('*.json'):
+    directory = state(project) / 'records'
+    try:
+        paths = list(directory.iterdir())
+    except FileNotFoundError:
+        return False
+    for path in paths:
+        if path.suffix != '.json':
+            continue
         try:
             if check_record(json.loads(path.read_text()), ttl):
                 return True
-        except (OSError, ValueError, TypeError):
+        except (ValueError, TypeError):
             continue
     return False
 
@@ -116,9 +123,10 @@ def gated(path, project, globs):
         relative = path.as_posix()
     parts = relative.lower().split('/')
     name, suffix = path.name.lower(), path.suffix.lower()
-    if any(p in {'test', 'tests', '__tests__', 'docs', 'doc'} for p in parts[:-1]):
+    if any(p in {'test', 'tests', '__tests__', 'spec', 'docs', 'doc'} for p in parts[:-1]):
         return False
-    if (name.startswith(('test_', '.env')) or name.endswith(('_test.py', '.test.js', '.spec.js', '.test.ts', '.spec.ts'))
+    if (name.startswith(('test_', '.env')) or path.stem.lower().endswith(('.test', '.spec', '_test', '_spec'))
+            or (suffix == '.java' and path.stem.endswith('Test'))
             or suffix in {'.md', '.mdx', '.rst', '.txt', '.adoc'} | CONFIG
             or name in {'makefile', 'dockerfile', '.gitignore', '.editorconfig'}
             or '.config.' in name or name in {'conftest.py', 'setup.cfg'}):
@@ -128,7 +136,11 @@ def gated(path, project, globs):
     return suffix in CODE or any(p in {'scripts', 'tools', 'bin', 'addons'} for p in parts[:-1])
 
 
-def hook(data):
+def hook(data, diagnostics=None):
+    if not isinstance(data, dict):
+        raise ValueError('hook input must be an object')
+    if diagnostics is None:
+        diagnostics = []
     project = root(data.get('cwd'))
     if os.environ.get('REUSE_GATE') == 'off':
         directory = state(project)
@@ -138,7 +150,7 @@ def hook(data):
                                   'tool': data.get('tool_name')}) + '\n')
         return None
     tool = data.get('tool_name')
-    if tool not in {'Write', 'MultiEdit', 'NotebookEdit'}:
+    if tool not in {'Write', 'Edit', 'MultiEdit', 'NotebookEdit'}:
         return None
     inputs = data.get('tool_input', {})
     target = inputs.get('notebook_path') if tool == 'NotebookEdit' else inputs.get('file_path')
@@ -147,8 +159,19 @@ def hook(data):
     path = Path(target)
     if not path.is_absolute():
         path = Path(data.get('cwd') or os.getcwd()) / path
-    ttl, globs = config(project)
-    if gated(path.resolve(), project, globs) and not has_record(project, ttl):
+    # Check both lexical and resolved paths so state symlinks cannot bypass protection.
+    path = Path(os.path.abspath(path))
+    resolved = path.resolve()
+    if any(candidate.is_relative_to(state(project)) for candidate in (path, resolved)):
+        return 'reuse-gate: protected .reuse-gate state; use the CLI for searches and decisions.'
+    if not gated(resolved, project, []):
+        return None
+    try:
+        ttl, globs = config(project)
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        diagnostics.append('invalid/unreadable config; using defaults: ' + str(error))
+        ttl, globs = 86400, []
+    if gated(resolved, project, globs) and not has_record(project, ttl):
         return DENY
     return None
 
@@ -171,18 +194,25 @@ def main(argv=None):
     decide.add_argument('decision', choices=DECISIONS)
     decide.add_argument('reason')
     args = parser.parse_args(argv)
-    try:
-        if args.command == 'hook':
-            reason = hook(json.load(sys.stdin))
+    if args.command == 'hook':
+        try:
+            diagnostics = []
+            reason = hook(json.load(sys.stdin), diagnostics)
+            if diagnostics:
+                raise ValueError('; '.join(diagnostics))
             if reason:
                 emit_denial(reason)
             return 0
+        except Exception as error:
+            print('reuse-gate: ' + str(error), file=sys.stderr)
+            return 1
+    try:
         project = root()
         ttl, _ = config(project)
         if args.command == 'search':
             if not args.keywords.strip():
                 raise ValueError('keywords must not be empty')
-            result = subprocess.run(['gh', 'search', 'repos', args.keywords, '--sort', 'stars',
+            result = subprocess.run(['gh', 'search', 'repos', *args.keywords.split(), '--sort', 'stars',
                 '--limit', '10', '--json', 'fullName,stargazersCount,license,pushedAt,description'],
                 capture_output=True, text=True, check=True, timeout=60)
             record = {'version': 1, 'created_at': time.time(), 'keywords': args.keywords,
@@ -205,9 +235,6 @@ def main(argv=None):
             print('Decision recorded: ' + identifier)
         return 0
     except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError) as error:
-        if args.command == 'hook':
-            emit_denial('reuse-gate: cannot verify evidence (' + str(error) + '). Fix the input/config/state and retry.')
-            return 0
         print('reuse-gate: ' + str(error), file=sys.stderr)
         return 1
 

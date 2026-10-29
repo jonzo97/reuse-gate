@@ -1,7 +1,9 @@
 # reuse-gate
 
 Agents can ignore prose that says “reuse existing tools first” and spend money rebuilding them.
-This Claude Code hook blocks new tool/script files until repository search evidence has a decision.
+This Claude Code hook covers Write/Edit/NotebookEdit (and optional MultiEdit), blocking new
+tool/script files until repository search evidence has a decision. Bash writers (`cat >`,
+`tee`, `cp`, heredocs), PowerShell and MCP writers are not covered.
 
 Python 3.9+ standard library only at runtime. The search command also needs an authenticated
 [GitHub CLI](https://cli.github.com/). Tests use pytest; it is not a runtime dependency.
@@ -22,7 +24,7 @@ Add this to your Claude Code `settings.json` (merge with existing hooks):
 {
   "hooks": {
     "PreToolUse": [{
-      "matcher": "Write|MultiEdit|NotebookEdit",
+      "matcher": "Write|Edit|NotebookEdit|MultiEdit",
       "hooks": [{
         "type": "command",
         "command": "reuse-gate hook",
@@ -59,10 +61,10 @@ reuse-gate search "python command line argument parser"
 reuse-gate decide <record-id> adopt "Compatible licence, maintained, and fits the task"
 ```
 
-Search runs exactly:
+Search splits the quoted keyword string on whitespace into separate arguments (not an exact phrase):
 
 ```sh
-gh search repos "<keywords>" --sort stars --limit 10 --json fullName,stargazersCount,license,pushedAt,description
+gh search repos <keyword1> <keyword2> ... --sort stars --limit 10 --json fullName,stargazersCount,license,pushedAt,description
 ```
 
 Successful searches save candidates under `.reuse-gate/records/`. Failed searches
@@ -111,21 +113,30 @@ logs are local state and may contain private task details.
 
 New files with common code extensions, or beneath `scripts/`, `tools/`, `bin/`,
 or `addons/`, require evidence. New notebooks are covered too. Existing files
-are exempt for all three tool names; MultiEdit uses `file_path`, NotebookEdit
+are exempt for all covered tool names; Write/Edit/MultiEdit use `file_path`, NotebookEdit
 uses `notebook_path` when those tools are available. Tests (`test_` files,
-`_test.py`, JS/TS `.test`/`.spec` files, and test directories), documentation,
+stems ending `.test`, `.spec`, `_test` or `_spec` with any extension, Java `*Test.java`,
+and `test`/`tests`/`__tests__`/`spec` directories), documentation,
 Markdown, common config/data formats, dot-env files, `*.config.*`, Dockerfiles,
 and Makefiles are exempt. Classification is heuristic; use globs for local conventions.
-Malformed records are ignored; hook input/config/read errors return a denial.
+Malformed records are ignored. Infrastructure errors (including invalid input, unreadable
+state, symlink resolution and bypass logging failures) print to stderr and exit 1,
+which is non-blocking in Claude Code; they never emit denial JSON. Built-in exemptions
+are checked before reading config. Invalid config falls back to defaults for evaluation,
+but the diagnostic still makes the hook exit 1 without a denial. Only verifiable
+policy violations emit denial JSON: missing valid evidence for gated paths, or a
+covered tool targeting protected `.reuse-gate/` state.
 
 For an intentional bypass, set `REUSE_GATE=off` in Claude Code's environment.
 Every hook invocation with this value appends a timestamp/tool event to
-`.reuse-gate/bypass.jsonl`; inability to log denies the invocation. No tool content
+`.reuse-gate/bypass.jsonl`; logging is best-effort and inability to log reports a
+non-blocking error (stderr and exit 1). No tool content
 is included in that log. Unset the variable to restore enforcement.
 
 This is a workflow gate for the registered tools, not a security boundary.
-It does not intercept Bash/other file creation, protect its local records/config
-from modification, tie keywords to a particular file, or verify reasons semantically.
+Covered tools cannot write inside `.reuse-gate/`, including existing state files.
+Other writers can modify that state. The gate does not tie keywords to a particular
+file or verify reasons semantically.
 Records are project-scoped rather than session-scoped so the separately invoked
 CLI and hook share evidence without requiring session IDs in shell environments.
 
