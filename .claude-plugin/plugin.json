@@ -1,0 +1,6 @@
+{
+  "name": "reuse-gate",
+  "version": "0.1.0",
+  "description": "Require repository search evidence before creating tools or scripts.",
+  "license": "MIT"
+}

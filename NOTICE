@@ -1,0 +1,15 @@
+reuse-gate
+Copyright (c) 2026 Jonathan Orgill
+
+Original implementation inspired by the MIT-licensed everything-claude-code:
+https://github.com/affaan-m/everything-claude-code
+Upstream licence: https://github.com/affaan-m/everything-claude-code/blob/main/LICENSE
+
+Design references (checked 2026-10-28):
+- skills/search-first/SKILL.md: adopt / extend / compose / build decision matrix,
+  including licence and maintenance evaluation.
+- scripts/hooks/gateguard-fact-force.js: PreToolUse deny-until-evidence design,
+  exempt globs and session state. reuse-gate uses project-scoped expiring records.
+
+No upstream source code is included. This notice credits the design sources;
+reuse-gate's original code is distributed under the accompanying MIT LICENSE.
