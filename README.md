@@ -112,12 +112,13 @@ Add `.reuse-gate/` to the project's `.gitignore`: searches, decisions, and bypas
 logs are local state and may contain private task details.
 
 New files with common code extensions, or beneath `scripts/`, `tools/`, `bin/`,
-or `addons/`, require evidence. New notebooks are covered too. Existing files
+or `addons/`, require evidence. Extensions include `.cs`, `.mts`, `.cts`, `.dart`,
+`.bat`, `.cmd`, `.vue`, `.svelte` and `.sql`. New notebooks are covered too. Existing files
 are exempt for all covered tool names; Write/Edit/MultiEdit use `file_path`, NotebookEdit
 uses `notebook_path` when those tools are available. Tests (`test_` files,
 stems ending `.test`, `.spec`, `_test` or `_spec` with any extension, Java `*Test.java`,
 and `test`/`tests`/`__tests__`/`spec` directories), documentation,
-Markdown, common config/data formats, dot-env files, `*.config.*`, Dockerfiles,
+Markdown, common config/data formats, exact `.env` / `.env.*` files, JS/TS `*.config.*` files, Dockerfiles,
 and Makefiles are exempt. Classification is heuristic; use globs for local conventions.
 Malformed records are ignored. Infrastructure errors (including invalid input, unreadable
 state, symlink resolution and bypass logging failures) print to stderr and exit 1,
@@ -137,6 +138,12 @@ This is a workflow gate for the registered tools, not a security boundary.
 Covered tools cannot write inside `.reuse-gate/`, including existing state files.
 Other writers can modify that state. The gate does not tie keywords to a particular
 file or verify reasons semantically.
+The hook discovers its project from the session cwd, not the target file's repository.
+A valid decision clears every gated file evaluated against that project for its TTL;
+it is not bound to a query, target, or session. Paths are resolved through symlinks
+before classification: a symlinked `scripts/` pointing outside the project loses
+that directory classification, so extensionless targets there can escape the gate
+(code extensions still apply).
 Records are project-scoped rather than session-scoped so the separately invoked
 CLI and hook share evidence without requiring session IDs in shell environments.
 
@@ -152,10 +159,10 @@ TTL, exemptions, file existence, invalid state and bypass logging without networ
 ## Credits
 
 Design inspiration, both MIT-licensed and checked 2026-10-28, from
-[everything-claude-code](https://github.com/affaan-m/everything-claude-code):
+[ECC (formerly everything-claude-code)](https://github.com/affaan-m/ECC):
 
-- [search-first decision matrix](https://github.com/affaan-m/everything-claude-code/blob/main/skills/search-first/SKILL.md): adopt / extend / compose / build, with licence and maintenance evaluation.
-- [GateGuard fact-forcing hook](https://github.com/affaan-m/everything-claude-code/blob/main/scripts/hooks/gateguard-fact-force.js): deny until evidence, exemptions and state. This implementation uses project-scoped TTL records in place of session-scoped state.
+- [search-first decision matrix](https://github.com/affaan-m/ECC/blob/main/skills/search-first/SKILL.md): adopt / extend / compose / build, with licence and maintenance evaluation.
+- [GateGuard fact-forcing hook](https://github.com/affaan-m/ECC/blob/main/scripts/hooks/gateguard-fact-force.js): deny until evidence, exemptions and state. This implementation uses project-scoped TTL records in place of session-scoped state.
 
 The implementation is original, small Python code; upstream JavaScript was not copied.
 See [NOTICE](NOTICE) for attribution and [LICENSE](LICENSE) for this project's MIT licence.
