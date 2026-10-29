@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -178,6 +179,32 @@ def test_invalid_hook_fails_open(project, monkeypatch, capsys):
 def test_bad_config_uses_defaults(project, monkeypatch, capsys):
     gate.save(project / '.reuse-gate/config.json', {'ttl_seconds': -1})
     monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
+    assert gate.main(['hook']) == 0
+    output = capsys.readouterr()
+    decision = json.loads(output.out)['hookSpecificOutput']
+    assert decision['permissionDecision'] == 'deny'
+    assert decision['permissionDecisionReason'].startswith(gate.DENY)
+    assert 'using defaults' in decision['permissionDecisionReason']
+    assert output.err == ''
+
+
+def test_corrupt_config_denies_new_file_with_diagnostic(project, monkeypatch, capsys):
+    (project / '.reuse-gate').mkdir()
+    (project / '.reuse-gate/config.json').write_text('{')
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
+    assert gate.main(['hook']) == 0
+    output = capsys.readouterr()
+    decision = json.loads(output.out)['hookSpecificOutput']
+    assert decision['permissionDecision'] == 'deny'
+    assert decision['permissionDecisionReason'].startswith(gate.DENY)
+    assert 'using defaults' in decision['permissionDecisionReason']
+    assert output.err == ''
+
+
+def test_bad_config_without_denial_fails_open(project, monkeypatch, capsys):
+    gate.save(project / '.reuse-gate/config.json', {'ttl_seconds': -1})
+    record(project)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
     assert gate.main(['hook']) == 1
     output = capsys.readouterr()
     assert output.out == ''
@@ -275,6 +302,25 @@ def test_search_errors_are_actionable(project, capsys, failure, detail):
         assert gate.main(['search', 'small tool']) == 1
     output = capsys.readouterr()
     assert detail in output.err
+    assert 'gh not installed/authenticated' in output.err
+    assert not (project / '.reuse-gate/records').exists()
+
+
+def test_search_timeout_decodes_stderr_bytes(project, monkeypatch, capsys):
+    fake_gh = project / 'gh'
+    fake_gh.write_text('#!/bin/sh\nprintf "slow gh\\n" >&2\nsleep 1\n')
+    fake_gh.chmod(0o755)
+    monkeypatch.setenv('PATH', str(project) + ':' + os.environ['PATH'])
+    real_run = subprocess.run
+
+    def short_timeout(*args, **kwargs):
+        kwargs['timeout'] = 0.05
+        return real_run(*args, **kwargs)
+
+    with patch('subprocess.run', side_effect=short_timeout):
+        assert gate.main(['search', 'small tool']) == 1
+    output = capsys.readouterr()
+    assert 'slow gh' in output.err
     assert 'gh not installed/authenticated' in output.err
     assert not (project / '.reuse-gate/records').exists()
 

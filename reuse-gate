@@ -198,10 +198,12 @@ def main(argv=None):
         try:
             diagnostics = []
             reason = hook(json.load(sys.stdin), diagnostics)
-            if diagnostics:
-                raise ValueError('; '.join(diagnostics))
             if reason:
+                if diagnostics:
+                    reason += '; ' + '; '.join(diagnostics)
                 emit_denial(reason)
+            elif diagnostics:
+                raise ValueError('; '.join(diagnostics))
             return 0
         except Exception as error:
             print('reuse-gate: ' + str(error), file=sys.stderr)
@@ -240,6 +242,8 @@ def main(argv=None):
         return 0
     except (FileNotFoundError, subprocess.SubprocessError) as error:
         detail = getattr(error, 'stderr', None) or str(error)
+        if isinstance(detail, bytes):
+            detail = detail.decode(errors='replace')
         hint = '; check gh not installed/authenticated, network access and API rate limits' if args.command == 'search' else ''
         print('reuse-gate: ' + detail.strip() + hint, file=sys.stderr)
         return 1
