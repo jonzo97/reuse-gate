@@ -146,7 +146,7 @@ def test_search_and_decide(project, capsys):
     with patch.dict(GLOBALS, {}), patch('subprocess.run') as run:
         run.return_value = SimpleNamespace(stdout=json.dumps(candidates))
         assert gate.main(['search', 'small tool']) == 0
-        assert run.call_args.args[0] == ['gh', 'search', 'repos', 'small tool', '--sort', 'stars',
+        assert run.call_args.args[0] == ['gh', 'search', 'repos', 'small', 'tool', '--sort', 'stars',
             '--limit', '10', '--json', 'fullName,stargazersCount,license,pushedAt,description']
     output = json.loads(capsys.readouterr().out)
     assert output['candidates'] == candidates
@@ -165,19 +165,23 @@ def test_decide_rejects_traversal(project):
     assert gate.main(['decide', '../elsewhere', 'adopt', 'fits']) == 1
 
 
-def test_invalid_hook_fails_closed(project, monkeypatch, capsys):
+def test_invalid_hook_fails_open(project, monkeypatch, capsys):
     monkeypatch.setattr(sys, 'stdin', io.StringIO('{}'))
     assert gate.main(['hook']) == 0  # unrelated/missing tool is a no-op
     monkeypatch.setattr(sys, 'stdin', io.StringIO('{'))
-    assert gate.main(['hook']) == 0
-    assert json.loads(capsys.readouterr().out)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'reuse-gate:' in output.err
 
 
-def test_bad_config_fails_closed(project, monkeypatch, capsys):
+def test_bad_config_uses_defaults(project, monkeypatch, capsys):
     gate.save(project / '.reuse-gate/config.json', {'ttl_seconds': -1})
     monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
-    assert gate.main(['hook']) == 0
-    assert json.loads(capsys.readouterr().out)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'using defaults' in output.err
 
 
 def test_allow_leaves_permissions_untouched(project):
@@ -185,3 +189,63 @@ def test_allow_leaves_permissions_untouched(project):
         input=json.dumps(payload(project, 'README.md')), capture_output=True, text=True)
     assert result.returncode == 0
     assert result.stdout == ''
+
+
+
+def test_edit_new_file(project):
+    assert gate.hook(payload(project, tool='Edit')) == gate.DENY
+    matcher = json.loads((MODULE.parent / 'hooks/hooks.json').read_text())['hooks']['PreToolUse'][0]['matcher']
+    assert 'Edit' in matcher.split('|')
+
+
+@pytest.mark.parametrize('name', ['README.md', 'options.json'])
+def test_bad_config_exempt_paths(project, name):
+    gate.save(project / '.reuse-gate/config.json', {'ttl_seconds': -1})
+    assert gate.hook(payload(project, name)) is None
+
+
+@pytest.mark.parametrize('raw', ['[]', 'null', '{"tool_name":"Write","tool_input":{}}'])
+def test_invalid_input_fails_open(project, monkeypatch, capsys, raw):
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(raw))
+    assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'reuse-gate:' in output.err
+
+
+@pytest.mark.parametrize('failure', [PermissionError('unreadable state'), RuntimeError('symlink loop')])
+def test_infrastructure_fails_open(project, monkeypatch, capsys, failure):
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
+    with patch.dict(GLOBALS, {'has_record': lambda *args: (_ for _ in ()).throw(failure)}):
+        assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert str(failure) in output.err
+
+
+def test_bypass_log_best_effort(project, monkeypatch, capsys):
+    monkeypatch.setenv('REUSE_GATE', 'off')
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload(project))))
+    with patch('pathlib.Path.mkdir', side_effect=PermissionError('read-only')):
+        assert gate.main(['hook']) == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'read-only' in output.err
+
+
+@pytest.mark.parametrize('tool', ['Write', 'Edit', 'NotebookEdit'])
+@pytest.mark.parametrize('name', ['.reuse-gate/records/new.json', '.reuse-gate/config.json'])
+def test_protect_state(project, tool, name):
+    record(project)
+    assert 'protected' in gate.hook(payload(project, name, tool))
+
+
+def test_readme_scope():
+    intro = (MODULE.parent / 'README.md').read_text().split('## Install')[0]
+    assert all(word in intro for word in ['Write', 'Edit', 'NotebookEdit', 'Bash', 'PowerShell', 'MCP'])
+
+
+@pytest.mark.parametrize('name', ['foo.test.tsx', 'foo.test.jsx', 'foo.test.mjs',
+    'foo_test.go', 'foo_test.rs', 'foo_spec.rb', 'FooTest.java', 'spec/new.py'])
+def test_language_test_exemptions(project, name):
+    assert gate.hook(payload(project, name)) is None
